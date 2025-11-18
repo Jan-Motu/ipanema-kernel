@@ -56,8 +56,24 @@ KDEB_DESTDIR="$DEB_DEST" \
     LOCALVERSION="$LOCALVERSION_SUFFIX" \
     make -C "$REPO_ROOT" O="$BUILD_DIR" -j "$JOBS" bindeb-pkg
 
-image_deb="$(ls "$DEB_DEST"/linux-image-"${kernel_release}"_*.deb 2>/dev/null | sort | tail -n1 || true)"
-headers_deb="$(ls "$DEB_DEST"/linux-headers-"${kernel_release}"_*.deb 2>/dev/null | sort | tail -n1 || true)"
+candidate_dirs=("$DEB_DEST" "$REPO_ROOT")
+find_package() {
+    local pattern="$1"
+    shift
+    local match search_dir
+    for search_dir in "$@"; do
+        [[ -d "$search_dir" ]] || continue
+        match=$(find "$search_dir" -maxdepth 1 -type f -name "$pattern" -print 2>/dev/null | sort | tail -n1)
+        if [[ -n "$match" ]]; then
+            printf '%s\n' "$match"
+            return 0
+        fi
+    done
+    return 1
+}
+
+image_deb="$(find_package "linux-image-${kernel_release}_*.deb" "${candidate_dirs[@]}" || true)"
+headers_deb="$(find_package "linux-headers-${kernel_release}_*.deb" "${candidate_dirs[@]}" || true)"
 
 if [[ -z "$image_deb" ]]; then
     echo "Failed to locate linux-image package for ${kernel_release} in ${DEB_DEST}." >&2
