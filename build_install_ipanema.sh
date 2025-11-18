@@ -24,8 +24,8 @@ DEB_DEST="${BUILD_DIR}/debs"
 JOBS="${JOBS:-$(( $(nproc) + 1 ))}"
 HOST_CONFIG="/boot/config-$(uname -r)"
 
-if [[ ! -d "${REPO_ROOT}/.git" ]]; then
-    echo "This script must live inside the ipanema kernel git repository (.git not found)." >&2
+if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "This script must live inside the ipanema kernel git repository (git metadata not accessible)." >&2
     exit 1
 fi
 
