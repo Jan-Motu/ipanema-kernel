@@ -16,9 +16,40 @@ require_command python3
 require_command sudo
 require_command nproc
 
+usage() {
+    cat <<'EOF'
+Usage: build_install_ipanema.sh [--release]
+
+  --release    Drop the "-test" suffix and produce a release build (e.g., 6.8.4-ipanema).
+EOF
+}
+
+RELEASE_MODE=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --release)
+            RELEASE_MODE=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
-LOCALVERSION_SUFFIX="-ipanema-test"
+if (( RELEASE_MODE )); then
+    LOCALVERSION_SUFFIX="-ipanema"
+else
+    LOCALVERSION_SUFFIX="-ipanema-test"
+fi
 BUILD_DIR="${REPO_ROOT}/build-${LOCALVERSION_SUFFIX#-}"
 DEB_DEST="${BUILD_DIR}/debs"
 JOBS="${JOBS:-$(( $(nproc) + 1 ))}"
@@ -56,7 +87,7 @@ KDEB_DESTDIR="$DEB_DEST" \
     LOCALVERSION="$LOCALVERSION_SUFFIX" \
     make -C "$REPO_ROOT" O="$BUILD_DIR" -j "$JOBS" bindeb-pkg
 
-candidate_dirs=("$DEB_DEST" "$REPO_ROOT")
+candidate_dirs=("$DEB_DEST" "$REPO_ROOT" "$(dirname "$REPO_ROOT")")
 find_package() {
     local pattern="$1"
     shift
@@ -88,7 +119,7 @@ echo "Installing ${headers_deb} and ${image_deb}..."
 sudo dpkg -i "$headers_deb" "$image_deb"
 
 echo "Attempting to set ${kernel_release} as the default GRUB entry..."
-menu_entry="$(python3 - "$kernel_release" <<'PY'
+menu_entry="$(sudo python3 - "$kernel_release" <<'PY'
 import sys
 kernel = sys.argv[1]
 stack = []
