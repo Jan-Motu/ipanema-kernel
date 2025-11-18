@@ -7778,6 +7778,8 @@ static int __sched_setscheduler(struct task_struct *p,
 	struct rq *rq;
 	int ipa_policy;
 	bool cpuset_locked = false;
+	struct ipanema_policy *old_ipa_policy = NULL;
+	struct ipanema_policy *new_ipa_policy = NULL;
 
 	/* The pi code expects interrupts enabled */
 	BUG_ON(pi && in_interrupt());
@@ -7859,6 +7861,8 @@ recheck:
 	 * and check cgroups to see if it's ok
 	 */
 	ipa_policy = attr->sched_ipa_policy;
+	old_ipa_policy = ipanema_task_policy(p);
+	new_ipa_policy = old_ipa_policy;
 	if (ipanema_policy(policy)) {
 		struct ipanema_policy *cur_policy = NULL;
 		int found = 0;
@@ -7868,8 +7872,8 @@ recheck:
 		struct ipanema_policy *cgrp_policy;
 #endif	/* CONFIG_CGROUP_IPANEMA */
 
-		if (attr->sched_ipa_policy == -1 && ipanema_task_policy(p))
-			ipa_policy = ipanema_task_policy(p)->id;
+		if (attr->sched_ipa_policy == -1 && old_ipa_policy)
+			ipa_policy = old_ipa_policy->id;
 
 #ifdef CONFIG_CGROUP_IPANEMA
 		/*
@@ -7891,12 +7895,13 @@ recheck:
 		list_for_each_entry(cur_policy, &ipanema_policies, list) {
 			if (cur_policy->id == ipa_policy) {
 				found = 1;
-				ipanema_task_policy(p) = cur_policy;
+				new_ipa_policy = cur_policy;
 				break;
 			}
 		}
 		read_unlock(&ipanema_rwlock);
-		if (!found || !__checkparam_ipanema(attr, cur_policy)) {
+		if (!found || !new_ipa_policy ||
+		    !__checkparam_ipanema(attr, new_ipa_policy)) {
 			retval = -EINVAL;
 			goto unlock;
 		}
@@ -7913,8 +7918,8 @@ recheck:
 			goto change;
 		if (dl_policy(policy) && dl_param_changed(p, attr))
 			goto change;
-		if (ipanema_policy(policy) && ipanema_task_policy(p)) {
-			if (ipa_policy != ipanema_task_policy(p)->id) {
+		if (ipanema_policy(policy) && new_ipa_policy) {
+			if ((old_ipa_policy ? old_ipa_policy->id : -1) != ipa_policy) {
 				queue_flags |= SWITCHING_CLASS;
 				goto change;
 			} else if (ipanema_attr_changed(p, attr)) {
@@ -8026,8 +8031,11 @@ change:
 	 * kind of hacky, but it works.
 	 */
 	if (queued || (ipanema_policy(p->policy) &&
-		       queue_flags & SWITCHING_CLASS))
+	       queue_flags & SWITCHING_CLASS))
 		dequeue_task(rq, p, queue_flags);
+
+	if (ipanema_policy(policy))
+		ipanema_task_policy(p) = new_ipa_policy;
 	if (running) {
 		p->ipanema.nopreempt = 1;
 		put_prev_task(rq, p);
