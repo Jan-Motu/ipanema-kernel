@@ -7864,6 +7864,13 @@ recheck:
 	old_ipa_policy = ipanema_task_policy(p);
 	new_ipa_policy = old_ipa_policy;
 	if (ipanema_policy(policy)) {
+		if (!ipanema_policy(p->policy) && p != current) {
+			pr_warn("Refusing remote transition of task %s[%d] into SCHED_IPANEMA from policy %d; request from %s[%d]\n",
+			        p->comm, task_pid_nr(p), p->policy,
+			        current->comm, task_pid_nr(current));
+			retval = -EPERM;
+			goto unlock;
+		}
 		struct ipanema_policy *cur_policy = NULL;
 		int found = 0;
 #ifdef CONFIG_CGROUP_IPANEMA
