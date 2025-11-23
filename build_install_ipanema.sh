@@ -18,17 +18,23 @@ require_command nproc
 
 usage() {
     cat <<'EOF'
-Usage: build_install_ipanema.sh [--release]
+Usage: build_install_ipanema.sh [--release] [--reuse-config]
 
-  --release    Drop the "-test" suffix and produce a release build (e.g., 6.8.4-ipanema).
+    --release        Drop the "-test" suffix and produce a release build (e.g., 6.8.4-ipanema).
+    --reuse-config   Skip copying the running kernel config and reusing the existing build .config.
 EOF
 }
 
 RELEASE_MODE=0
+REUSE_CONFIG=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --release)
             RELEASE_MODE=1
+            shift
+            ;;
+        --reuse-config)
+            REUSE_CONFIG=1
             shift
             ;;
         -h|--help)
@@ -73,11 +79,20 @@ fi
 
 mkdir -p "$BUILD_DIR" "$DEB_DEST"
 
-echo "Copying running kernel config from ${HOST_CONFIG}..."
-cp "$HOST_CONFIG" "$BUILD_DIR/.config"
+if (( REUSE_CONFIG )); then
+    if [[ ! -f "$BUILD_DIR/.config" ]]; then
+        echo "--reuse-config was specified but ${BUILD_DIR}/.config does not exist." >&2
+        echo "Create or copy your desired config there first, or omit --reuse-config." >&2
+        exit 1
+    fi
+    echo "Reusing existing configuration at ${BUILD_DIR}/.config"
+else
+    echo "Copying running kernel config from ${HOST_CONFIG}..."
+    cp "$HOST_CONFIG" "$BUILD_DIR/.config"
 
-echo "Refreshing configuration using olddefconfig..."
-make -C "$REPO_ROOT" O="$BUILD_DIR" olddefconfig >/dev/null
+    echo "Refreshing configuration using olddefconfig..."
+    make -C "$REPO_ROOT" O="$BUILD_DIR" olddefconfig >/dev/null
+fi
 
 echo "Determining target kernel release..."
 kernel_release="$(make -C "$REPO_ROOT" O="$BUILD_DIR" -s kernelrelease LOCALVERSION="$LOCALVERSION_SUFFIX")"
