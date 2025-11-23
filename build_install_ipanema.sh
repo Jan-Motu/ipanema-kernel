@@ -80,12 +80,17 @@ fi
 mkdir -p "$BUILD_DIR" "$DEB_DEST"
 
 if (( REUSE_CONFIG )); then
-    if [[ ! -f "$BUILD_DIR/.config" ]]; then
-        echo "--reuse-config was specified but ${BUILD_DIR}/.config does not exist." >&2
-        echo "Create or copy your desired config there first, or omit --reuse-config." >&2
+    if [[ -f "$BUILD_DIR/.config" ]]; then
+        echo "Reusing existing configuration at ${BUILD_DIR}/.config"
+    elif [[ -f "$REPO_ROOT/.config" ]]; then
+        echo "--reuse-config requested but ${BUILD_DIR}/.config missing; copying ${REPO_ROOT}/.config..."
+        cp "$REPO_ROOT/.config" "$BUILD_DIR/.config"
+        echo "Reusing configuration from ${REPO_ROOT}/.config"
+    else
+        echo "--reuse-config was specified but neither ${BUILD_DIR}/.config nor ${REPO_ROOT}/.config exist." >&2
+        echo "Create or copy your desired config first, or omit --reuse-config." >&2
         exit 1
     fi
-    echo "Reusing existing configuration at ${BUILD_DIR}/.config"
 else
     echo "Copying running kernel config from ${HOST_CONFIG}..."
     cp "$HOST_CONFIG" "$BUILD_DIR/.config"
