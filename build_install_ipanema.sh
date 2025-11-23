@@ -99,6 +99,11 @@ else
     make -C "$REPO_ROOT" O="$BUILD_DIR" olddefconfig >/dev/null
 fi
 
+if [[ ! -f "$BUILD_DIR/include/config/auto.conf" || ! -f "$BUILD_DIR/include/generated/autoconf.h" ]]; then
+    echo "Kernel autoconf metadata missing; running olddefconfig to regenerate..."
+    make -C "$REPO_ROOT" O="$BUILD_DIR" olddefconfig >/dev/null
+fi
+
 echo "Determining target kernel release..."
 kernel_release="$(make -C "$REPO_ROOT" O="$BUILD_DIR" -s kernelrelease LOCALVERSION="$LOCALVERSION_SUFFIX")"
 
