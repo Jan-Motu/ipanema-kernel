@@ -104,6 +104,15 @@ if [[ ! -f "$BUILD_DIR/include/config/auto.conf" || ! -f "$BUILD_DIR/include/gen
     make -C "$REPO_ROOT" O="$BUILD_DIR" oldconfig
 fi
 
+echo "Clearing CONFIG_SYSTEM_TRUSTED_KEYS to avoid distro-provided certificate paths..."
+if [[ ! -x "$REPO_ROOT/scripts/config" ]]; then
+    echo "Expected helper $REPO_ROOT/scripts/config not found or not executable." >&2
+    exit 1
+fi
+"$REPO_ROOT"/scripts/config --file "$BUILD_DIR/.config" --set-str CONFIG_SYSTEM_TRUSTED_KEYS ""
+echo "Propagating trusted-key update with olddefconfig..."
+make -C "$REPO_ROOT" O="$BUILD_DIR" olddefconfig >/dev/null
+
 echo "Determining target kernel release..."
 kernel_release="$(make -C "$REPO_ROOT" O="$BUILD_DIR" -s kernelrelease LOCALVERSION="$LOCALVERSION_SUFFIX")"
 
