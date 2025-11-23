@@ -95,13 +95,13 @@ else
     echo "Copying running kernel config from ${HOST_CONFIG}..."
     cp "$HOST_CONFIG" "$BUILD_DIR/.config"
 
-    echo "Refreshing configuration using olddefconfig..."
-    make -C "$REPO_ROOT" O="$BUILD_DIR" olddefconfig >/dev/null
+    echo "Refreshing configuration using oldconfig (interactive)..."
+    make -C "$REPO_ROOT" O="$BUILD_DIR" oldconfig
 fi
 
 if [[ ! -f "$BUILD_DIR/include/config/auto.conf" || ! -f "$BUILD_DIR/include/generated/autoconf.h" ]]; then
-    echo "Kernel autoconf metadata missing; running olddefconfig to regenerate..."
-    make -C "$REPO_ROOT" O="$BUILD_DIR" olddefconfig >/dev/null
+    echo "Kernel autoconf metadata missing; running oldconfig to regenerate (you may be prompted)..."
+    make -C "$REPO_ROOT" O="$BUILD_DIR" oldconfig
 fi
 
 echo "Determining target kernel release..."
