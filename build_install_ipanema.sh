@@ -18,15 +18,17 @@ require_command nproc
 
 usage() {
     cat <<'EOF'
-Usage: build_install_ipanema.sh [--release] [--reuse-config]
+Usage: build_install_ipanema.sh [--release] [--reuse-config] [--reuse-build]
 
     --release        Drop the "-test" suffix and produce a release build (e.g., 6.8.4-ipanema).
     --reuse-config   Skip copying the running kernel config and reusing the existing build .config.
+    --reuse-build    Reuse the existing build directory without cleaning or copying configs.
 EOF
 }
 
 RELEASE_MODE=0
 REUSE_CONFIG=0
+REUSE_BUILD=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --release)
@@ -35,6 +37,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --reuse-config)
             REUSE_CONFIG=1
+            shift
+            ;;
+        --reuse-build)
+            REUSE_BUILD=1
             shift
             ;;
         -h|--help)
@@ -77,9 +83,14 @@ if [[ ! -f "$HOST_CONFIG" ]]; then
     exit 1
 fi
 
+if (( ! REUSE_BUILD )); then
+    rm -rf "$BUILD_DIR"
+fi
 mkdir -p "$BUILD_DIR" "$DEB_DEST"
 
-if (( REUSE_CONFIG )); then
+if (( REUSE_BUILD )); then
+    echo "Reusing existing build directory ${BUILD_DIR} as-is"
+elif (( REUSE_CONFIG )); then
     if [[ -f "$BUILD_DIR/.config" ]]; then
         echo "Reusing existing configuration at ${BUILD_DIR}/.config"
     elif [[ -f "$REPO_ROOT/.config" ]]; then
@@ -99,7 +110,7 @@ else
     make -C "$REPO_ROOT" O="$BUILD_DIR" oldconfig
 fi
 
-if [[ ! -f "$BUILD_DIR/include/config/auto.conf" || ! -f "$BUILD_DIR/include/generated/autoconf.h" ]]; then
+if (( ! REUSE_BUILD )) && [[ ! -f "$BUILD_DIR/include/config/auto.conf" || ! -f "$BUILD_DIR/include/generated/autoconf.h" ]]; then
     echo "Kernel autoconf metadata missing; running oldconfig to regenerate (you may be prompted)..."
     make -C "$REPO_ROOT" O="$BUILD_DIR" oldconfig
 fi
