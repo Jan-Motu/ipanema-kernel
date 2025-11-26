@@ -176,7 +176,13 @@ static int ipanema_new_prepare(struct process_event *e)
 	 */
 	read_lock_irqsave(&ipanema_rwlock, flags);
 	policy = ipanema_task_policy(p);
-	if (!policy || !try_module_get(policy->kmodule)) {
+	if (!policy) {
+		read_unlock_irqrestore(&ipanema_rwlock, flags);
+		return -1;
+	}
+	if (p->ipanema.policy_ref_preacquired)
+		p->ipanema.policy_ref_preacquired = false;
+	else if (!try_module_get(policy->kmodule)) {
 		read_unlock_irqrestore(&ipanema_rwlock, flags);
 		return -1;
 	}
@@ -338,6 +344,7 @@ static void ipanema_terminate(struct process_event *e)
 	policy->routines->terminate(policy, e);
 
 	ipanema_task_policy(p) = NULL;
+	p->ipanema.policy_ref_preacquired = false;
 	module_put(policy->kmodule);
 }
 

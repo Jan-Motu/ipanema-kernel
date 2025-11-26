@@ -7780,6 +7780,8 @@ static int __sched_setscheduler(struct task_struct *p,
 	bool cpuset_locked = false;
 	struct ipanema_policy *old_ipa_policy = NULL;
 	struct ipanema_policy *new_ipa_policy = NULL;
+	struct ipanema_policy *pre_get_policy = NULL;
+	bool pre_get_taken = false;
 
 	/* The pi code expects interrupts enabled */
 	BUG_ON(pi && in_interrupt());
@@ -7912,6 +7914,14 @@ recheck:
 			retval = -EINVAL;
 			goto unlock;
 		}
+		if (old_ipa_policy != new_ipa_policy) {
+			if (!try_module_get(new_ipa_policy->kmodule)) {
+				retval = -EINVAL;
+				goto unlock;
+			}
+			pre_get_policy = new_ipa_policy;
+			pre_get_taken = true;
+		}
 	}
 
 	/*
@@ -8041,8 +8051,16 @@ change:
 	       queue_flags & SWITCHING_CLASS))
 		dequeue_task(rq, p, queue_flags);
 
-	if (ipanema_policy(policy))
+	if (ipanema_policy(policy)) {
 		ipanema_task_policy(p) = new_ipa_policy;
+		if ((queue_flags & SWITCHING_CLASS) && !queued) {
+			p->ipanema.state = IPANEMA_NOT_QUEUED;
+			p->ipanema.rq = NULL;
+			p->ipanema.policy_metadata = NULL;
+		}
+		if (pre_get_taken)
+			p->ipanema.policy_ref_preacquired = true;
+	}
 	if (running) {
 		p->ipanema.nopreempt = 1;
 		put_prev_task(rq, p);
@@ -8094,6 +8112,10 @@ unlock:
 	task_rq_unlock(rq, p, &rf);
 	if (cpuset_locked)
 		cpuset_unlock();
+	if (retval && pre_get_taken) {
+		module_put(pre_get_policy->kmodule);
+		p->ipanema.policy_ref_preacquired = false;
+	}
 	return retval;
 }
 

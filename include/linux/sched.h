@@ -788,6 +788,7 @@ struct sched_ipanema_entity {
 
 	int just_yielded;
 	int nopreempt;
+	bool policy_ref_preacquired;
 
 	enum ipanema_state state;
 	struct ipanema_rq *rq;
