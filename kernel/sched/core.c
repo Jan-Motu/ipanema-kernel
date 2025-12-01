@@ -8054,6 +8054,21 @@ change:
 	if (ipanema_policy(policy)) {
 		ipanema_task_policy(p) = new_ipa_policy;
 		if ((queue_flags & SWITCHING_CLASS) && !queued) {
+			/* Task is switching ipanema policies but not queued.
+			 * We must call the old policy's terminate handler to properly
+			 * clean up before clearing the metadata.
+			 * The new policy will be properly initialized when:
+			 * - set_next_task_ipanema() is called for running tasks
+			 * - enqueue_task_ipanema() is called for non-running tasks
+			 */
+			if (old_ipa_policy && old_ipa_policy->routines->terminate) {
+				struct process_event e = {
+					.target = p,
+					.cpu = task_cpu(p),
+					.flags = 0,
+				};
+				old_ipa_policy->routines->terminate(old_ipa_policy, &e);
+			}
 			p->ipanema.state = IPANEMA_NOT_QUEUED;
 			p->ipanema.rq = NULL;
 			p->ipanema.policy_metadata = NULL;
@@ -8314,6 +8329,8 @@ static void get_params(struct task_struct *p, struct sched_attr *attr)
 		__getparam_dl(p, attr);
 	else if (task_has_rt_policy(p))
 		attr->sched_priority = p->rt_priority;
+	else if (ipanema_policy(p->policy))
+		__getparam_ipanema(p, attr);
 	else
 		attr->sched_nice = task_nice(p);
 }
