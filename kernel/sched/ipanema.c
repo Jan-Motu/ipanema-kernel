@@ -464,7 +464,10 @@ void __getparam_ipanema(struct task_struct *p, struct sched_attr *attr)
 {
 	struct ipanema_policy *policy = ipanema_task_policy(p);
 
-	if (policy->routines->getparam_attr)
+	if (policy)
+		attr->sched_ipa_policy = policy->id;
+	
+	if (policy && policy->routines->getparam_attr)
 		policy->routines->getparam_attr(p, attr);
 }
 
@@ -1288,8 +1291,19 @@ static void task_dead_ipanema(struct task_struct *p)
 static void set_next_task_ipanema(struct rq *rq, struct task_struct *p,
 				  bool first)
 {
+	struct process_event e = { .target = p, .cpu = rq->cpu, .flags = 0 };
+
 	if (unlikely(ipanema_sched_class_log))
 		pr_info("In %s [rq=%d, pid=%d]\n", __func__, rq->cpu, p->pid);
+
+	/* If the task just switched to a new ipanema policy and hasn't been
+	 * initialized yet (metadata is NULL and state is IPANEMA_NOT_QUEUED),
+	 * we need to call ipanema_new_prepare() to initialize it.
+	 */
+	if (ipanema_task_state(p) == IPANEMA_NOT_QUEUED &&
+	    !policy_metadata(p)) {
+		ipanema_new_prepare(&e);
+	}
 
 	/* Check that rq->curr is also ipanema_current and fix it.
 	 * Happens when switching to SCHED_IPANEMA: the task is dequeued
