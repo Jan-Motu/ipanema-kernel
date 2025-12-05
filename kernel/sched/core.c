@@ -8072,6 +8072,11 @@ change:
 			p->ipanema.state = IPANEMA_NOT_QUEUED;
 			p->ipanema.rq = NULL;
 			p->ipanema.policy_metadata = NULL;
+			
+			pr_info("IPANEMA: Task %d (%s) switching policy: '%s' -> '%s'\n",
+				p->pid, p->comm,
+				old_ipa_policy ? old_ipa_policy->name : "NULL",
+				new_ipa_policy ? new_ipa_policy->name : "NULL");
 		}
 		if (pre_get_taken)
 			p->ipanema.policy_ref_preacquired = true;
