@@ -237,6 +237,11 @@ static void ipanema_tick(struct process_event *e)
 
 	policy = ipanema_task_policy(p);
 
+	if (!policy) {
+		pr_err("[ERR] ipanema_tick called with NULL policy for task %d\n", p->pid);
+		return;
+	}
+
 	WARN(!policy->routines->tick, "%s is NULL in policy %s\n", __func__,
 	     policy->name);
 
@@ -707,9 +712,6 @@ static void enqueue_task_ipanema(struct rq *rq, struct task_struct *p,
 				   .flags = 0 };
 	enum ipanema_core_state cstate;
 
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__, p->pid, rq->cpu);
-
 	/* task has no ipanema policy, just increment rq->nr_running */
 	if (!ipanema_task_policy(p)) {
 		pr_warn("[WARN] %s: called on a task with no ipanema policy set.\n",
@@ -823,9 +825,6 @@ static void update_curr_ipanema(struct rq *rq)
 	struct task_struct *curr = rq->curr;
 	s64 delta_exec;
 
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [rq=%d]\n", __func__, rq->cpu);
-
 	/*
 	 * We now update statistics. Needed to get %CPU working for Ipanema
 	 * processes in top, for instance.
@@ -851,9 +850,6 @@ static void dequeue_task_ipanema(struct rq *rq, struct task_struct *p,
 				   .cpu = smp_processor_id(),
 				   .flags = 0 };
 	int state;
-
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__, p->pid, rq->cpu);
 
 	update_curr_ipanema(rq);
 
@@ -971,9 +967,6 @@ static void yield_task_ipanema(struct rq *rq)
 				   .flags = 0 };
 	struct task_struct *p = rq->curr;
 
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [rq=%d]\n", __func__, rq->cpu);
-
 	/*
 	 * The process called yield(). Switch its state to IPANEMA_READY,
 	 * schedule() is going to be called very soon.
@@ -984,17 +977,13 @@ static void yield_task_ipanema(struct rq *rq)
 
 static bool yield_to_task_ipanema(struct rq *rq, struct task_struct *p)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__, p->pid, rq->cpu);
-
 	return 0;
 }
 
 static void check_preempt_wakeup(struct rq *rq, struct task_struct *p,
 				 int wake_flags)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__, p->pid, rq->cpu);
+	/* Preemption check - handled by policy */
 }
 
 static struct task_struct *__pick_next_task_ipanema(struct rq *rq,
@@ -1005,10 +994,32 @@ static struct task_struct *__pick_next_task_ipanema(struct rq *rq,
 	struct ipanema_policy *policy = NULL;
 	enum ipanema_core_state cstate;
 	unsigned long flags;
+	static DEFINE_PER_CPU(int, pick_loop_count);
+	int *loop_count = this_cpu_ptr(&pick_loop_count);
 
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__,
-			prev ? prev->pid : -1, rq->cpu);
+	/* Detect infinite loops - panic if called too many times rapidly */
+	(*loop_count)++;
+	
+	/* 
+	 * Silent detection - only panic, no logging that could cause printk storms.
+	 * Use lower threshold since we're not wasting time on printk.
+	 */
+	if (unlikely(*loop_count > 1000)) {
+		/* Only now do we log - once before panicking */
+		pr_emerg("IPANEMA HANG: __pick_next_task called %d times on CPU %d\n",
+			 *loop_count, rq->cpu);
+		pr_emerg("  prev=%d (%s) state=%d policy=%p metadata=%p\n",
+			 prev ? prev->pid : -1,
+			 prev ? prev->comm : "none",
+			 prev ? prev->ipanema.state : -1,
+			 prev ? prev->ipanema.policy : NULL,
+			 prev ? prev->ipanema.policy_metadata : NULL);
+		pr_emerg("  ipanema_current=%d\n",
+			 per_cpu(ipanema_current, rq->cpu) ? per_cpu(ipanema_current, rq->cpu)->pid : -1);
+		
+		/* Immediate panic - don't wait for more iterations */
+		panic("Ipanema scheduler infinite loop detected");
+	}
 
 	/*
 	 * If ipanema_current is not NULL, it means that pick_next_task() is
@@ -1025,12 +1036,21 @@ static struct task_struct *__pick_next_task_ipanema(struct rq *rq,
 	 */
 	result = per_cpu(ipanema_current, rq->cpu);
 	if (result) {
-		if (READ_ONCE(result->__state) != TASK_RUNNING) {
+		/* Check if task is uninitialized - this shouldn't happen but protect against it */
+		if (ipanema_task_state(result) == IPANEMA_NOT_QUEUED || !policy_metadata(result)) {
+			pr_warn("WARN: ipanema_current has uninitialized task [pid=%d, state=%s, metadata=%p] - clearing it\n",
+				result->pid,
+				ipanema_state_to_str(ipanema_task_state(result)),
+				policy_metadata(result));
+			/* Clear the uninitialized task from ipanema_current */
+			per_cpu(ipanema_current, rq->cpu) = NULL;
+			result = NULL;
+		} else if (READ_ONCE(result->__state) != TASK_RUNNING) {
 			/* current has signals pending, leave it running */
 			goto end;
 		} else {
 			/* yield to force preemption */
-			struct process_event e = { .target = current };
+			struct process_event e = { .target = result };
 
 			ipanema_yield(&e);
 		}
@@ -1082,6 +1102,8 @@ static struct task_struct *__pick_next_task_ipanema(struct rq *rq,
 	}
 
 end:
+	/* Reset loop counter since we're returning successfully */
+	*loop_count = 0;
 	return result;
 }
 
@@ -1094,10 +1116,6 @@ static void put_prev_task_ipanema(struct rq *rq, struct task_struct *prev)
 {
 	enum ipanema_state state;
 	struct process_event e = { .target = prev, .cpu = smp_processor_id(), .flags = 0 };
-
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__, prev->pid,
-			rq->cpu);
 
 	/* Safety checks. Use BUG() to fail gracelessly. */
 	if (!prev || prev->sched_class != &ipanema_sched_class) {
@@ -1198,9 +1216,6 @@ static int select_task_rq_ipanema(struct task_struct *p, int prev_cpu,
 				   .flags = wake_flags };
 	int ret = task_cpu(p);
 
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d]\n", __func__, p->pid);
-
 	/* Safety checks. */
 	if (!p || p->sched_class != &ipanema_sched_class) {
 		pr_warn("[WARN] %s: Preconditions not fulfilled [%d %d]\n",
@@ -1240,17 +1255,12 @@ static int select_task_rq_ipanema(struct task_struct *p, int prev_cpu,
 
 static void migrate_task_rq_ipanema(struct task_struct *p, int new_cpu)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s, [pid=%d, new_cpu=%d]\n", __func__, p->pid,
-			new_cpu);
+	/* Migration handled by core scheduler */
 }
 
 static void rq_online_ipanema(struct rq *rq)
 {
 	struct ipanema_policy *policy = NULL;
-
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [rq=%d]\n", __func__, rq->cpu);
 
 	list_for_each_entry(policy, &ipanema_policies, list)
 		ipanema_core_entry(policy, rq->cpu);
@@ -1260,24 +1270,17 @@ static void rq_offline_ipanema(struct rq *rq)
 {
 	struct ipanema_policy *policy = NULL;
 
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [rq=%d]\n", __func__, rq->cpu);
-
 	list_for_each_entry(policy, &ipanema_policies, list)
 		ipanema_core_exit(policy, rq->cpu);
 }
 
 static void task_woken_ipanema(struct rq *this_rq, struct task_struct *p)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("in %s [pid=%d, rq=%d]\n", __func__, p->pid,
-			this_rq->cpu);
+	/* Task wakeup notification */
 }
 
 static void task_dead_ipanema(struct task_struct *p)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d]\n", __func__, p->pid);
 
 	if (!p || p->sched_class != &ipanema_sched_class)
 		pr_err("[ERR] %s: exiting because it was called on an invalid process, a non-ipanema process, or a process whose metadata was not initialized. [%p %d]",
@@ -1292,9 +1295,6 @@ static void set_next_task_ipanema(struct rq *rq, struct task_struct *p,
 				  bool first)
 {
 	struct process_event e = { .target = p, .cpu = rq->cpu, .flags = 0 };
-
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [rq=%d, pid=%d]\n", __func__, rq->cpu, p->pid);
 
 	/* If the task just switched to a new ipanema policy and hasn't been
 	 * initialized yet (metadata is NULL and state is IPANEMA_NOT_QUEUED),
@@ -1324,9 +1324,11 @@ static void task_tick_ipanema(struct rq *rq, struct task_struct *curr,
 {
 	struct process_event e = { .target = curr, .cpu = smp_processor_id() };
 
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__, curr->pid,
-			rq->cpu);
+	/* Check for problematic state before proceeding */
+	if (ipanema_task_state(curr) == IPANEMA_NOT_QUEUED || !policy_metadata(curr)) {
+		/* Task not fully initialized yet, skip tick */
+		return;
+	}
 
 	update_curr_ipanema(rq);
 
@@ -1347,14 +1349,12 @@ static void task_tick_ipanema(struct rq *rq, struct task_struct *curr,
 	if (rq->cpu != task_cpu(curr))
 		pr_warn("%s: rq->cpu=%d task_cpu(curr)=%d\n", __func__, rq->cpu,
 			task_cpu(curr));
+	
 	ipanema_tick(&e);
 }
 
 static void task_fork_ipanema(struct task_struct *p)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d]\n", __func__, p->pid);
-
 	ipanema_task_state(p) = IPANEMA_NOT_QUEUED;
 	ipanema_task_rq(p) = NULL;
 	p->ipanema.node_runqueue.__rb_parent_color = 0;
@@ -1366,15 +1366,11 @@ static void task_fork_ipanema(struct task_struct *p)
 static void prio_changed_ipanema(struct rq *rq, struct task_struct *p,
 				 int oldprio)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__, p->pid, rq->cpu);
+	/* Priority change notification */
 }
 
 static void switched_from_ipanema(struct rq *rq, struct task_struct *p)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__, p->pid, rq->cpu);
-
 	/* Task is leaving ipanema, let's cleanup everything */
 	ipanema_task_state(p) = IPANEMA_NOT_QUEUED;
 	ipanema_task_rq(p) = NULL;
@@ -1386,9 +1382,6 @@ static void switched_from_ipanema(struct rq *rq, struct task_struct *p)
 
 static void switched_to_ipanema(struct rq *rq, struct task_struct *p)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__, p->pid, rq->cpu);
-
 	if (rq->curr != p) {
 		/*
 		 * We can safely call resched_curr() here, because the rq lock
@@ -1402,18 +1395,13 @@ static void switched_to_ipanema(struct rq *rq, struct task_struct *p)
 static unsigned int get_rr_interval_ipanema(struct rq *rq,
 					    struct task_struct *task)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d, rq=%d]\n", __func__, task->pid,
-			rq->cpu);
-
 	return (100 * HZ / 1000);
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 static void task_change_group_ipanema(struct task_struct *p)
 {
-	if (unlikely(ipanema_sched_class_log))
-		pr_info("In %s [pid=%d]\n", __func__, p->pid);
+	/* Group change notification */
 }
 #endif
 
