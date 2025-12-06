@@ -293,8 +293,12 @@ static void ipanema_block(struct process_event *e)
 
 	policy = ipanema_task_policy(p);
 
-	WARN(!policy->routines->block, "%s is NULL in policy %s\n", __func__,
-	     policy->name);
+	/* During policy switches, task might have invalid or transitioning policy */
+	if (!policy || !policy->routines || !policy->routines->block) {
+		pr_warn("WARN: ipanema_block called on task %d (%s) with invalid policy=%p\n",
+			p->pid, p->comm, policy);
+		return;
+	}
 
 	policy->routines->block(policy, e);
 }
@@ -354,8 +358,19 @@ static void ipanema_terminate(struct process_event *e)
 
 	policy = ipanema_task_policy(p);
 
-	WARN(!policy->routines->terminate, "%s is NULL in policy %s\n",
-	     __func__, policy->name);
+	/* During policy switches, task might have invalid or transitioning policy */
+	if (!policy || !policy->routines || !policy->routines->terminate) {
+		pr_warn("WARN: ipanema_terminate called on task %d (%s) with invalid policy=%p\n",
+			p->pid, p->comm, policy);
+		/* Clean up what we can */
+		if (policy) {
+			ipanema_task_policy(p) = NULL;
+			p->ipanema.policy_ref_preacquired = false;
+			if (policy->kmodule)
+				module_put(policy->kmodule);
+		}
+		return;
+	}
 
 	policy->routines->terminate(policy, e);
 
@@ -1096,9 +1111,22 @@ static struct task_struct *__pick_next_task_ipanema(struct rq *rq,
 	list_for_each_entry(policy, &ipanema_policies, list) {
 		ipanema_schedule(policy, rq->cpu);
 		result = per_cpu(ipanema_current, rq->cpu);
-		/* if a task is found, schedule it */
-		if (result)
-			break;
+		/* if a task is found, check it's still valid for this policy */
+		if (result) {
+			/* Verify the task's policy matches what we expect */
+			struct ipanema_policy *task_policy = ipanema_task_policy(result);
+			if (task_policy != policy || !policy_metadata(result)) {
+				/* Task is switching policies - clear it and continue */
+				pr_warn("WARN: Policy '%s' selected task %d (%s) but task policy is '%s' (metadata=%p)\n",
+					policy->name, result->pid, result->comm,
+					task_policy ? task_policy->name : "NULL",
+					policy_metadata(result));
+				per_cpu(ipanema_current, rq->cpu) = NULL;
+				result = NULL;
+			} else {
+				break;
+			}
+		}
 		/*
 		 * Policy has no ready task on this cpu. If cpu is
 		 * already idle, try next policy. Else, call the
@@ -1114,11 +1142,26 @@ static struct task_struct *__pick_next_task_ipanema(struct rq *rq,
 
 		ipanema_schedule(policy, rq->cpu);
 		result = per_cpu(ipanema_current, rq->cpu);
-		/* if a task is found, schedule it */
-		if (result)
-			break;
-		/* else call enter_idle() handler for this policy/cpu */
-		ipanema_enter_idle(policy, rq->cpu);
+		/* if a task is found, verify it still belongs to this policy */
+		if (result) {
+			struct ipanema_policy *task_policy = ipanema_task_policy(result);
+			if (task_policy != policy || !policy_metadata(result)) {
+				/* Task is switching policies - clear it and try next policy */
+				pr_warn("WARN: Policy '%s' selected task %d (%s) after newly_idle but task policy is '%s' (metadata=%p)\n",
+					policy->name, result->pid, result->comm,
+					task_policy ? task_policy->name : "NULL",
+					policy_metadata(result));
+				per_cpu(ipanema_current, rq->cpu) = NULL;
+				result = NULL;
+				/* Call enter_idle since we have no valid task */
+				ipanema_enter_idle(policy, rq->cpu);
+			} else {
+				break;
+			}
+		} else {
+			/* else call enter_idle() handler for this policy/cpu */
+			ipanema_enter_idle(policy, rq->cpu);
+		}
 	}
 	read_unlock_irqrestore(&ipanema_rwlock, flags);
 
