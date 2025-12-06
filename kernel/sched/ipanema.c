@@ -1075,10 +1075,21 @@ static struct task_struct *__pick_next_task_ipanema(struct rq *rq,
 			/* current has signals pending, leave it running */
 			goto end;
 		} else {
-			/* yield to force preemption */
-			struct process_event e = { .target = result };
-
-			ipanema_yield(&e);
+			/* 
+			 * Yield to force preemption. However, during policy switches,
+			 * the task might be in an inconsistent state. Check first.
+			 */
+			struct ipanema_policy *task_policy = ipanema_task_policy(result);
+			if (task_policy && task_policy->routines && task_policy->routines->yield) {
+				struct process_event e = { .target = result };
+				ipanema_yield(&e);
+			} else {
+				/* Task is switching policies or policy not fully initialized */
+				pr_warn("WARN: Cannot yield task %d (%s) - policy=%p or routines not ready\n",
+					result->pid, result->comm, task_policy);
+				per_cpu(ipanema_current, rq->cpu) = NULL;
+				result = NULL;
+			}
 		}
 	}
 	read_lock_irqsave(&ipanema_rwlock, flags);
