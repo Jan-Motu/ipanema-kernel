@@ -1017,7 +1017,11 @@ static struct task_struct *__pick_next_task_ipanema(struct rq *rq,
 	enum ipanema_core_state cstate;
 	unsigned long flags;
 	static DEFINE_PER_CPU(int, pick_loop_count);
+	static DEFINE_PER_CPU(int, last_selected_pid);
+	static DEFINE_PER_CPU(int, same_task_count);
 	int *loop_count = this_cpu_ptr(&pick_loop_count);
+	int *last_pid = this_cpu_ptr(&last_selected_pid);
+	int *same_count = this_cpu_ptr(&same_task_count);
 
 	/* Detect infinite loops - panic if called too many times rapidly */
 	(*loop_count)++;
@@ -1133,6 +1137,36 @@ static struct task_struct *__pick_next_task_ipanema(struct rq *rq,
 end:
 	/* Reset loop counter since we're returning successfully */
 	*loop_count = 0;
+	
+	/* Livelock detection: Track if we keep selecting the same task */
+	if (result) {
+		if (*last_pid == result->pid) {
+			(*same_count)++;
+			/* If we've selected the same task 500 times in a row, we might be livelocked */
+			if (unlikely(*same_count > 500)) {
+				pr_emerg("IPANEMA LIVELOCK: CPU %d selected task %d (%s) %d times consecutively\n",
+					 rq->cpu, result->pid, result->comm, *same_count);
+				pr_emerg("  Task state=%s policy='%s' metadata=%p\n",
+					 ipanema_state_to_str(ipanema_task_state(result)),
+					 ipanema_task_policy(result) ? ipanema_task_policy(result)->name : "NULL",
+					 result->ipanema.policy_metadata);
+				pr_emerg("  Task runtime: %llu ns, vruntime: %llu\n",
+					 result->se.sum_exec_runtime,
+					 result->se.vruntime);
+				pr_emerg("  This may indicate a livelock - system running but not making progress\n");
+				panic("Ipanema scheduler livelock detected");
+			}
+		} else {
+			/* Different task selected, reset counter */
+			*last_pid = result->pid;
+			*same_count = 1;
+		}
+	} else {
+		/* NULL result, reset tracking */
+		*last_pid = 0;
+		*same_count = 0;
+	}
+	
 	return result;
 }
 
