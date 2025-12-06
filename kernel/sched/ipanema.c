@@ -192,9 +192,9 @@ static int ipanema_new_prepare(struct process_event *e)
 
 	read_unlock_irqrestore(&ipanema_rwlock, flags);
 
-	/* Log task initialization with policy */
-	pr_info("IPANEMA: Task %d (%s) initializing with policy '%s' (id=%llu)\n",
-		p->pid, p->comm, policy->name, policy->id);
+	/* Log task initialization with policy (rate limited to avoid storms) */
+	printk_ratelimited(KERN_INFO "IPANEMA: Task %d (%s) initializing with policy '%s' (id=%llu)\n",
+			   p->pid, p->comm, policy->name, policy->id);
 
 	return policy->routines->new_prepare(policy, e);
 }
@@ -265,9 +265,16 @@ static void ipanema_yield(struct process_event *e)
 	lockdep_assert_held(&rq->__lock);
 
 	policy = ipanema_task_policy(p);
-
-	WARN(!policy->routines->yield, "%s is NULL in policy %s\n", __func__,
-	     policy->name);
+	
+	/* 
+	 * During policy switches, the task might have a new policy assigned
+	 * but the policy's data structures might not be ready yet.
+	 */
+	if (!policy || !policy->routines || !policy->routines->yield) {
+		pr_warn("WARN: ipanema_yield called on task %d (%s) with invalid policy=%p\n",
+			p->pid, p->comm, policy);
+		return;
+	}
 
 	policy->routines->yield(policy, e);
 }
@@ -749,8 +756,8 @@ static void enqueue_task_ipanema(struct rq *rq, struct task_struct *p,
 		ipanema_task_state(p) = IPANEMA_NOT_QUEUED;
 		ipanema_task_rq(p) = NULL;
 
-		pr_info("IPANEMA: Task %d (%s) switching to SCHED_IPANEMA, policy='%s'\n",
-			p->pid, p->comm, ipanema_task_policy(p) ? ipanema_task_policy(p)->name : "NULL");
+		printk_ratelimited(KERN_INFO "IPANEMA: Task %d (%s) switching to SCHED_IPANEMA, policy='%s'\n",
+				   p->pid, p->comm, ipanema_task_policy(p) ? ipanema_task_policy(p)->name : "NULL");
 
 		ipanema_new_prepare(&e);
 	}
@@ -781,9 +788,9 @@ static void enqueue_task_ipanema(struct rq *rq, struct task_struct *p,
 		if (cstate == IPANEMA_IDLE_CORE)
 			ipanema_exit_idle(ipanema_task_policy(p), rq->cpu);
 		
-		pr_info("IPANEMA: Task %d (%s) enqueued to cpu=%d, policy='%s', state=NOT_QUEUED->READY\n",
-			p->pid, p->comm, rq->cpu, 
-			ipanema_task_policy(p) ? ipanema_task_policy(p)->name : "NULL");
+		printk_ratelimited(KERN_INFO "IPANEMA: Task %d (%s) enqueued to cpu=%d, policy='%s', state=NOT_QUEUED->READY\n",
+				   p->pid, p->comm, rq->cpu, 
+				   ipanema_task_policy(p) ? ipanema_task_policy(p)->name : "NULL");
 		
 		ipanema_new_place(&e);
 		goto end;
@@ -951,9 +958,9 @@ static void dequeue_task_ipanema(struct rq *rq, struct task_struct *p,
 	 * is the right replacement.
 	 */
 	if (p->flags & PF_EXITING) {
-		pr_info("IPANEMA: Task %d (%s) terminating, policy='%s'\n",
-			p->pid, p->comm, 
-			ipanema_task_policy(p) ? ipanema_task_policy(p)->name : "NULL");
+		printk_ratelimited(KERN_INFO "IPANEMA: Task %d (%s) terminating, policy='%s'\n",
+				   p->pid, p->comm, 
+				   ipanema_task_policy(p) ? ipanema_task_policy(p)->name : "NULL");
 		ipanema_terminate(&e);
 		goto end;
 	}
@@ -1108,11 +1115,12 @@ static struct task_struct *__pick_next_task_ipanema(struct rq *rq,
 			put_prev_task(rq, prev);
 		result->se.exec_start = rq_clock_task(rq);
 		
-		/* Log task selection (not every time, use a rate limit) */
-		pr_info_ratelimited("IPANEMA: CPU %d selected task %d (%s), policy='%s', state=%s\n",
-			rq->cpu, result->pid, result->comm,
-			ipanema_task_policy(result) ? ipanema_task_policy(result)->name : "NULL",
-			ipanema_state_to_str(ipanema_task_state(result)));
+		/* Log task selection using trace_printk to avoid console overhead */
+		if (printk_ratelimit())
+			trace_printk("IPANEMA: CPU %d selected task %d (%s), policy='%s', state=%s\n",
+				     rq->cpu, result->pid, result->comm,
+				     ipanema_task_policy(result) ? ipanema_task_policy(result)->name : "NULL",
+				     ipanema_state_to_str(ipanema_task_state(result)));
 	}
 
 	if (ipanema_task_state(result) != IPANEMA_RUNNING) {
