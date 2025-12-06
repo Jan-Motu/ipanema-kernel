@@ -8052,11 +8052,10 @@ change:
 		dequeue_task(rq, p, queue_flags);
 
 	if (ipanema_policy(policy)) {
-		ipanema_task_policy(p) = new_ipa_policy;
 		if ((queue_flags & SWITCHING_CLASS) && !queued) {
 			/* Task is switching ipanema policies but not queued.
 			 * We must call the old policy's terminate handler to properly
-			 * clean up before clearing the metadata.
+			 * clean up before changing the policy pointer.
 			 * The new policy will be properly initialized when:
 			 * - set_next_task_ipanema() is called for running tasks
 			 * - enqueue_task_ipanema() is called for non-running tasks
@@ -8078,6 +8077,8 @@ change:
 					   old_ipa_policy ? old_ipa_policy->name : "NULL",
 					   new_ipa_policy ? new_ipa_policy->name : "NULL");
 		}
+		/* NOW change the policy pointer after cleanup is complete */
+		ipanema_task_policy(p) = new_ipa_policy;
 		if (pre_get_taken)
 			p->ipanema.policy_ref_preacquired = true;
 	}
