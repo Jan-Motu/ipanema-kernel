@@ -797,6 +797,11 @@ struct sched_ipanema_entity {
 	void *policy_metadata;
 
 	struct ipanema_policy *policy;
+	
+	/* Track which module owns our reference, so we can release it even if
+	 * policy pointer gets cleared prematurely. This is set when we acquire
+	 * a module reference and cleared when we release it. */
+	struct module *policy_kmodule;
 };
 
 struct kmap_ctrl {
