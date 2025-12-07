@@ -180,11 +180,22 @@ static int ipanema_new_prepare(struct process_event *e)
 		read_unlock_irqrestore(&ipanema_rwlock, flags);
 		return -1;
 	}
-	if (p->ipanema.policy_ref_preacquired)
+	if (p->ipanema.policy_ref_preacquired) {
 		p->ipanema.policy_ref_preacquired = false;
-	else if (!try_module_get(policy->kmodule)) {
+		/* Debug: track that we're using the pre-acquired reference */
+		printk_ratelimited(KERN_INFO "IPANEMA_REF: Task %d (%s) using pre-acquired module ref policy='%s' refcnt=%d\n",
+				   p->pid, p->comm, policy->name, module_refcount(policy->kmodule));
+		/* Store the module pointer so we can release it later even if policy ptr gets cleared */
+		p->ipanema.policy_kmodule = policy->kmodule;
+	} else if (!try_module_get(policy->kmodule)) {
 		read_unlock_irqrestore(&ipanema_rwlock, flags);
 		return -1;
+	} else {
+		/* Debug: track module_get */
+		printk_ratelimited(KERN_INFO "IPANEMA_REF: Task %d (%s) module_get policy='%s' refcnt=%d\n",
+				   p->pid, p->comm, policy->name, module_refcount(policy->kmodule));
+		/* Store the module pointer so we can release it later even if policy ptr gets cleared */
+		p->ipanema.policy_kmodule = policy->kmodule;
 	}
 
 	WARN(!policy->routines->new_prepare, "%s is NULL in policy %s\n",
@@ -372,8 +383,13 @@ static void ipanema_terminate(struct process_event *e)
 		if (policy) {
 			ipanema_task_policy(p) = NULL;
 			p->ipanema.policy_ref_preacquired = false;
-			if (policy->kmodule)
+			if (policy->kmodule) {
+				/* Debug: track module_put */
+				printk_ratelimited(KERN_INFO "IPANEMA_REF: Task %d (%s) module_put(invalid) policy='%s' refcnt=%d\n",
+						   p->pid, p->comm, policy->name, module_refcount(policy->kmodule));
 				module_put(policy->kmodule);
+				p->ipanema.policy_kmodule = NULL;
+			}
 		}
 		return;
 	}
@@ -382,7 +398,11 @@ static void ipanema_terminate(struct process_event *e)
 
 	ipanema_task_policy(p) = NULL;
 	p->ipanema.policy_ref_preacquired = false;
+	/* Debug: track module_put */
+	printk_ratelimited(KERN_INFO "IPANEMA_REF: Task %d (%s) module_put policy='%s' refcnt=%d\n",
+			   p->pid, p->comm, policy->name, module_refcount(policy->kmodule));
 	module_put(policy->kmodule);
+	p->ipanema.policy_kmodule = NULL;
 }
 
 static void ipanema_schedule(struct ipanema_policy *policy, unsigned int core)
@@ -897,8 +917,41 @@ static void dequeue_task_ipanema(struct rq *rq, struct task_struct *p,
 
 	/* task has no ipanema policy, just decrement rq->nr_running */
 	if (!ipanema_task_policy(p)) {
-		pr_warn("[WARN] %s: called on a task with no ipanema policy set.\n",
-			__func__);
+		pr_warn("[WARN] %s: called on task %d (%s) with no ipanema policy set. flags=0x%x state=%d metadata=%p pre_acquired=%d\n",
+			__func__, p->pid, p->comm, flags, ipanema_task_state(p), 
+			policy_metadata(p), p->ipanema.policy_ref_preacquired);
+		
+		/* If task has policy_kmodule set, it means we're holding a module
+		 * reference that needs to be released, even though the policy pointer got cleared.
+		 * This is the fix for the module reference leak!
+		 */
+		if (p->ipanema.policy_kmodule) {
+			pr_err("Task %d (%s) NULL policy but has kmodule=%p - releasing module ref refcnt=%d\n",
+			       p->pid, p->comm, p->ipanema.policy_kmodule,
+			       module_refcount(p->ipanema.policy_kmodule));
+			module_put(p->ipanema.policy_kmodule);
+			p->ipanema.policy_kmodule = NULL;
+			/* Also clear metadata since task is being cleaned up */
+			if (policy_metadata(p)) {
+				policy_metadata(p) = NULL;
+			}
+		}
+		/* Otherwise, if task has metadata set without kmodule, this is an inconsistent state */
+		else if (policy_metadata(p)) {
+			pr_err("[ERR] Task %d (%s) has metadata=%p but NULL policy AND NULL kmodule - INCONSISTENT STATE!\n",
+			       p->pid, p->comm, policy_metadata(p));
+			/* Clear metadata to prevent further issues */
+			policy_metadata(p) = NULL;
+		}
+		
+		/* If task has pre_acquired flag set, it means we pre-acquired a module ref
+		 * that never got consumed. Clear the flag.
+		 */
+		if (p->ipanema.policy_ref_preacquired) {
+			pr_err("[ERR] Task %d (%s) has pre_acquired flag but NULL policy - clearing flag\n",
+			       p->pid, p->comm);
+			p->ipanema.policy_ref_preacquired = false;
+		}
 		goto end;
 	}
 
@@ -1372,13 +1425,25 @@ static void task_woken_ipanema(struct rq *this_rq, struct task_struct *p)
 
 static void task_dead_ipanema(struct task_struct *p)
 {
-
 	if (!p || p->sched_class != &ipanema_sched_class)
 		pr_err("[ERR] %s: exiting because it was called on an invalid process, a non-ipanema process, or a process whose metadata was not initialized. [%p %d]",
 		       __func__, p, p->sched_class != &ipanema_sched_class);
 
+	/* Only release module reference if we still have policy_kmodule set.
+	 * If it's NULL, then ipanema_terminate or dequeue already released it.
+	 * This prevents double-release which causes negative refcounts.
+	 */
+	if (p->ipanema.policy_kmodule) {
+		printk_ratelimited(KERN_WARNING "IPANEMA_REF: Task %d (%s) task_dead cleanup - module_put kmodule=%p refcnt=%d\n",
+				   p->pid, p->comm, p->ipanema.policy_kmodule,
+				   module_refcount(p->ipanema.policy_kmodule));
+		module_put(p->ipanema.policy_kmodule);
+		p->ipanema.policy_kmodule = NULL;
+	}
+	
 	ipanema_task_policy(p) = NULL;
 	ipanema_task_state(p) = IPANEMA_NOT_QUEUED;
+	p->ipanema.policy_ref_preacquired = false;
 }
 #endif
 
@@ -1462,6 +1527,28 @@ static void prio_changed_ipanema(struct rq *rq, struct task_struct *p,
 
 static void switched_from_ipanema(struct rq *rq, struct task_struct *p)
 {
+	struct ipanema_policy *policy = ipanema_task_policy(p);
+	
+	printk_ratelimited(KERN_INFO "IPANEMA_REF: Task %d (%s) switched_from_ipanema policy='%s' metadata=%p kmodule=%p pre_acquired=%d\n",
+			   p->pid, p->comm,
+			   policy ? policy->name : "NULL",
+			   policy_metadata(p),
+			   p->ipanema.policy_kmodule,
+			   p->ipanema.policy_ref_preacquired);
+	
+	/* Only release module reference if we still have policy_kmodule set.
+	 * If it's NULL, then ipanema_terminate or dequeue already released it.
+	 * This prevents double-release which causes negative refcounts.
+	 */
+	if (p->ipanema.policy_kmodule) {
+		pr_warn("IPANEMA_REF: Task %d (%s) switched_from_ipanema cleanup - module_put kmodule=%p refcnt=%d (policy=%s)\n",
+			p->pid, p->comm, p->ipanema.policy_kmodule,
+			module_refcount(p->ipanema.policy_kmodule),
+			policy ? policy->name : "NULL");
+		module_put(p->ipanema.policy_kmodule);
+		p->ipanema.policy_kmodule = NULL;
+	}
+	
 	/* Task is leaving ipanema, let's cleanup everything */
 	ipanema_task_state(p) = IPANEMA_NOT_QUEUED;
 	ipanema_task_rq(p) = NULL;
@@ -1469,6 +1556,9 @@ static void switched_from_ipanema(struct rq *rq, struct task_struct *p)
 	p->ipanema.node_runqueue.rb_right = NULL;
 	p->ipanema.node_runqueue.rb_left = NULL;
 	policy_metadata(p) = NULL;
+	ipanema_task_policy(p) = NULL;
+	/* Clear the pre-acquired flag to avoid stale state */
+	p->ipanema.policy_ref_preacquired = false;
 }
 
 static void switched_to_ipanema(struct rq *rq, struct task_struct *p)
