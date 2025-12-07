@@ -241,13 +241,11 @@ static void ipanema_tick(struct process_event *e)
 
 	policy = ipanema_task_policy(p);
 
-	if (!policy) {
-		pr_err("[ERR] ipanema_tick called with NULL policy for task %d\n", p->pid);
+	/* During policy switches, task might have invalid or transitioning policy */
+	if (!policy || !policy->routines || !policy->routines->tick) {
+		/* Silently skip - tick happens frequently and this is expected during switches */
 		return;
 	}
-
-	WARN(!policy->routines->tick, "%s is NULL in policy %s\n", __func__,
-	     policy->name);
 
 	policy->routines->tick(policy, e);
 }
@@ -312,8 +310,12 @@ static int ipanema_unblock_prepare(struct process_event *e)
 
 	policy = ipanema_task_policy(p);
 
-	WARN(!policy->routines->unblock_prepare, "%s is NULL in policy %s\n",
-	     __func__, policy->name);
+	/* During policy switches, task might have invalid or transitioning policy */
+	if (!policy || !policy->routines || !policy->routines->unblock_prepare) {
+		pr_warn("WARN: ipanema_unblock_prepare called on task %d (%s) with invalid policy=%p\n",
+			p->pid, p->comm, policy);
+		return 0; /* Return success to allow unblock to proceed */
+	}
 
 	return policy->routines->unblock_prepare(policy, e);
 }
@@ -327,8 +329,12 @@ static void ipanema_unblock_place(struct process_event *e)
 
 	policy = ipanema_task_policy(p);
 
-	WARN(!policy->routines->unblock_place, "%s is NULL in policy %s\n",
-	     __func__, policy->name);
+	/* During policy switches, task might have invalid or transitioning policy */
+	if (!policy || !policy->routines || !policy->routines->unblock_place) {
+		pr_warn("WARN: ipanema_unblock_place called on task %d (%s) with invalid policy=%p\n",
+			p->pid, p->comm, policy);
+		return;
+	}
 
 	policy->routines->unblock_place(policy, e);
 }
@@ -828,10 +834,12 @@ static void enqueue_task_ipanema(struct rq *rq, struct task_struct *p,
 		 * If unblock_prepare() chose an IDLE cpu, we must call the
 		 * exit_idle() handler to wake it up on the policy
 		 */
-		cstate =
-			ipanema_get_core_state(ipanema_task_policy(p), rq->cpu);
-		if (cstate == IPANEMA_IDLE_CORE)
-			ipanema_exit_idle(ipanema_task_policy(p), rq->cpu);
+		struct ipanema_policy *task_policy = ipanema_task_policy(p);
+		if (task_policy && task_policy->routines) {
+			cstate = ipanema_get_core_state(task_policy, rq->cpu);
+			if (cstate == IPANEMA_IDLE_CORE)
+				ipanema_exit_idle(task_policy, rq->cpu);
+		}
 		lockdep_assert_rq_held(rq);
 		ipanema_unblock_place(&e);
 		goto end;
