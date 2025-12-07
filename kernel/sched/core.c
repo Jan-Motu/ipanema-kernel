@@ -7919,8 +7919,13 @@ recheck:
 				retval = -EINVAL;
 				goto unlock;
 			}
+			/* Debug: track pre-acquired module_get */
+			printk_ratelimited(KERN_INFO "IPANEMA_REF: Task %d (%s) pre-acquire module_get policy='%s' refcnt=%d\n",
+					   p->pid, p->comm, new_ipa_policy->name, module_refcount(new_ipa_policy->kmodule));
 			pre_get_policy = new_ipa_policy;
 			pre_get_taken = true;
+			/* Store the module pointer so we can track it even if policy pointer gets cleared */
+			p->ipanema.policy_kmodule = new_ipa_policy->kmodule;
 		}
 	}
 
@@ -8053,21 +8058,14 @@ change:
 
 	if (ipanema_policy(policy)) {
 		if ((queue_flags & SWITCHING_CLASS) && !queued) {
-			/* Task is switching ipanema policies but not queued.
-			 * We must call the old policy's terminate handler to properly
-			 * clean up before changing the policy pointer.
+			/* Task is switching ipanema policies but not queued (running task).
+			 * dequeue_task was already called above with SWITCHING_CLASS flag,
+			 * which called ipanema_terminate to clean up the old policy.
+			 * We just need to reset the state for the new policy here.
 			 * The new policy will be properly initialized when:
 			 * - set_next_task_ipanema() is called for running tasks
 			 * - enqueue_task_ipanema() is called for non-running tasks
 			 */
-			if (old_ipa_policy && old_ipa_policy->routines->terminate) {
-				struct process_event e = {
-					.target = p,
-					.cpu = task_cpu(p),
-					.flags = 0,
-				};
-				old_ipa_policy->routines->terminate(old_ipa_policy, &e);
-			}
 			p->ipanema.state = IPANEMA_NOT_QUEUED;
 			p->ipanema.rq = NULL;
 			p->ipanema.policy_metadata = NULL;
@@ -8079,8 +8077,12 @@ change:
 		}
 		/* NOW change the policy pointer after cleanup is complete */
 		ipanema_task_policy(p) = new_ipa_policy;
-		if (pre_get_taken)
+		if (pre_get_taken) {
 			p->ipanema.policy_ref_preacquired = true;
+			/* Debug: mark that pre-acquired ref will be used */
+			printk_ratelimited(KERN_INFO "IPANEMA_REF: Task %d (%s) using pre-acquired ref for policy='%s'\n",
+					   p->pid, p->comm, new_ipa_policy ? new_ipa_policy->name : "NULL");
+		}
 	}
 	if (running) {
 		p->ipanema.nopreempt = 1;
