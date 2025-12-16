@@ -7866,13 +7866,6 @@ recheck:
 	old_ipa_policy = ipanema_task_policy(p);
 	new_ipa_policy = old_ipa_policy;
 	if (ipanema_policy(policy)) {
-		if (!ipanema_policy(p->policy) && p != current) {
-			pr_warn("Refusing remote transition of task %s[%d] into SCHED_IPANEMA from policy %d; request from %s[%d]\n",
-			        p->comm, task_pid_nr(p), p->policy,
-			        current->comm, task_pid_nr(current));
-			retval = -EPERM;
-			goto unlock;
-		}
 		struct ipanema_policy *cur_policy = NULL;
 		int found = 0;
 #ifdef CONFIG_CGROUP_IPANEMA
@@ -7880,6 +7873,23 @@ recheck:
 		struct ipanema_group *ipa_grp;
 		struct ipanema_policy *cgrp_policy;
 #endif	/* CONFIG_CGROUP_IPANEMA */
+
+		/*
+		 * Security check: Only allow remote transitions INTO SCHED_IPANEMA
+		 * if the task is ALREADY in SCHED_IPANEMA (switching between policies).
+		 * If the task is on a different scheduler (SCHED_NORMAL, etc.),
+		 * only the task itself can move into SCHED_IPANEMA.
+		 * This prevents unauthorized external processes from hijacking tasks.
+		 * 
+		 * Skip this check for privileged kernel operations (user=false),
+		 * such as cgroup migrations which are already authorized.
+		 */
+		if (user && !ipanema_policy(p->policy) && p != current) {
+			printk_ratelimited(KERN_INFO "IPANEMA: Refusing remote transition of task %d into SCHED_IPANEMA from policy %d (not already in Ipanema)\n",
+					   p->pid, p->policy);
+			retval = -EPERM;
+			goto unlock;
+		}
 
 		if (attr->sched_ipa_policy == -1 && old_ipa_policy)
 			ipa_policy = old_ipa_policy->id;
@@ -7924,8 +7934,10 @@ recheck:
 					   p->pid, p->comm, new_ipa_policy->name, module_refcount(new_ipa_policy->kmodule));
 			pre_get_policy = new_ipa_policy;
 			pre_get_taken = true;
-			/* Store the module pointer so we can track it even if policy pointer gets cleared */
-			p->ipanema.policy_kmodule = new_ipa_policy->kmodule;
+			/* NOTE: Don't set policy_kmodule here - ipanema_terminate needs the old
+			 * kmodule pointer to release it. We'll set policy_kmodule after
+			 * ipanema_terminate has run (after dequeue_task with SWITCHING_CLASS).
+			 */
 		}
 	}
 
@@ -8079,6 +8091,8 @@ change:
 		ipanema_task_policy(p) = new_ipa_policy;
 		if (pre_get_taken) {
 			p->ipanema.policy_ref_preacquired = true;
+			/* Set the kmodule pointer AFTER ipanema_terminate cleared the old one */
+			p->ipanema.policy_kmodule = new_ipa_policy->kmodule;
 			/* Debug: mark that pre-acquired ref will be used */
 			printk_ratelimited(KERN_INFO "IPANEMA_REF: Task %d (%s) using pre-acquired ref for policy='%s'\n",
 					   p->pid, p->comm, new_ipa_policy ? new_ipa_policy->name : "NULL");

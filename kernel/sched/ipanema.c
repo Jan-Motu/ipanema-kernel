@@ -1730,27 +1730,33 @@ static void ipanema_cgrp_attach(struct cgroup_taskset *tset)
 				   .sched_nice = 0,
 				   .sched_priority = 0 };
 
-	/* Move each task to the ipanema policy */
+	/* Move each SCHED_IPANEMA task to the cgroup's ipanema policy.
+	 * Only tasks already in SCHED_IPANEMA are affected - we don't
+	 * forcibly move SCHED_NORMAL/SCHED_FIFO/etc tasks into Ipanema.
+	 * If the cgroup has no policy set, leave Ipanema tasks alone.
+	 */
 	cgroup_taskset_for_each(t, css, tset) {
 		struct ipanema_group *ipa_grp = ipanema_group_of(css);
 
-		if (ipa_grp->policy) {
-			/* move thread to new ipanema policy */
-			attr.sched_policy = SCHED_IPANEMA;
-			attr.sched_ipa_policy = ipa_grp->policy->id;
-			attr.sched_ipa_attr_size = 0;
-			attr.sched_ipa_attr = NULL;
-		} else {
-			/* move thread to fair */
-			attr.sched_policy = SCHED_NORMAL;
+		/* Only switch tasks that are already in SCHED_IPANEMA */
+		if (!ipanema_policy(t->policy)) {
+			continue;
 		}
+
+		/* If cgroup has no policy set, leave Ipanema tasks on their current policy */
+		if (!ipa_grp->policy) {
+			continue;
+		}
+
+		/* move thread to new ipanema policy */
+		attr.sched_policy = SCHED_IPANEMA;
+		attr.sched_ipa_policy = ipa_grp->policy->id;
+		attr.sched_ipa_attr_size = 0;
+		attr.sched_ipa_attr = NULL;
+
 		if (sched_setattr_nocheck(t, &attr)) {
-			if (ipa_grp->policy)
-				pr_err("task %d could not be moved to ipanema policy %llu!\n",
-				       t->pid, ipa_grp->policy->id);
-			else
-				pr_err("task %d could not be moved to fair!\n",
-				       t->pid);
+			pr_err("task %d could not be moved to ipanema policy %llu!\n",
+			       t->pid, ipa_grp->policy->id);
 		}
 	}
 }
@@ -1828,16 +1834,26 @@ static int ipanema_policy_id_write_s64(struct cgroup_subsys_state *css,
 	if (old_policy)
 		module_put(old_policy->kmodule);
 
-	/* Move all tasks in css to their new policy */
+	/* Move all SCHED_IPANEMA tasks in css to their new policy.
+	 * Only tasks already in SCHED_IPANEMA are affected - we don't
+	 * forcibly move SCHED_NORMAL/SCHED_FIFO/etc tasks into Ipanema.
+	 * If val == -1 (reset), leave Ipanema tasks on their current policy
+	 * instead of forcibly moving them to SCHED_NORMAL.
+	 */
+	if (val == -1) {
+		/* Don't move Ipanema tasks out - just clear the cgroup policy */
+		return 0;
+	}
+
 	css_task_iter_start(css, 0, &it);
 	while ((t = css_task_iter_next(&it))) {
+		/* Only switch tasks that are already in SCHED_IPANEMA */
+		if (!ipanema_policy(t->policy)) {
+			continue;
+		}
 		if (sched_setattr_nocheck(t, &attr)) {
-			if (val == -1)
-				pr_err("task %d could not be moved to fair!\n",
-				       t->pid);
-			else
-				pr_err("task %d could not be moved to ipanema policy %lld!\n",
-				       t->pid, val);
+			pr_err("task %d could not be moved to ipanema policy %lld!\n",
+			       t->pid, val);
 		}
 	}
 	css_task_iter_end(&it);
