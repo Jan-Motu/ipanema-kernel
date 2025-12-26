@@ -102,6 +102,9 @@ KDEB_DESTDIR="$DEB_DEST" \
     LOCALVERSION="$LOCALVERSION_SUFFIX" \
     make -C "$REPO_ROOT" O="$BUILD_DIR" -j "$JOBS" bindeb-pkg
 
+echo "Installing kernel modules to /lib/modules/${kernel_release}..."
+sudo make -C "$REPO_ROOT" O="$BUILD_DIR" LOCALVERSION="$LOCALVERSION_SUFFIX" modules_install
+
 candidate_dirs=("$DEB_DEST" "$REPO_ROOT" "$(dirname "$REPO_ROOT")")
 find_package() {
     local pattern="$1"
